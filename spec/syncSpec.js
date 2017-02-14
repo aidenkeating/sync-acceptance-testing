@@ -153,7 +153,28 @@ describe('Sync', function() {
     .catch(function(err) {
       expect(err).toBeNull();
     });
-  });
+  }, 60000);
+
+  it('should create records created by other clients', function() {
+    const recordToCreate = { test: 'create' };
+
+    return manage()
+    .then(createRecord(recordToCreate))
+    .then(waitForSyncEvent('record_delta_received'))
+    .then(function verifyDeltaStructure(event) {
+      expect(event.uid).not.toBeNull();
+      expect(event.message).toEqual('create');
+      expect(event.dataset_id).toEqual(datasetId);
+      return event;
+    })
+    .then(doRead())
+    .then(function verifyCorrectRecordApplied(record) {
+      expect(record.data).toEqual(recordToCreate);
+    })
+    .catch(function(err) {
+      expect(err).toBeNull();
+    });
+  }, 60000);
 
   it('should create records created by other clients', function() {
     const recordToCreate = { test: 'create' };
@@ -311,7 +332,7 @@ function createRecord(record) {
 /**
  * Wait for a specific notification to be made from the client SDK.
  *
- * @param {string} expectedEvent - The name of the event to wait for.
+ * @param {String} expectedEvent - The name of the event to wait for.
  */
 function waitForSyncEvent(expectedEvent) {
   return function() {
