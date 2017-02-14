@@ -32,7 +32,7 @@ describe('Sync', function() {
   });
 
   it('should list', function() {
-    return manage()
+    return manage(datasetId)
     .then(waitForSyncEvent('sync_started'))
     .then(function verifySyncStarted(event) {
       expect(event.dataset_id).toEqual(datasetId);
@@ -54,8 +54,8 @@ describe('Sync', function() {
         expect(event.message).toMatch(/(load|create)/);
       }
     });
-    return manage()
-    .then(doCreate)
+    return manage(datasetId)
+    .then(doCreate(datasetId, testData))
     .then(function(res) {
       expect(res.action).toEqual('create');
       expect(res.post).toEqual(testData);
@@ -69,9 +69,9 @@ describe('Sync', function() {
   });
 
   it('should read', function() {
-    return manage()
-    .then(doCreate)
-    .then(doRead())
+    return manage(datasetId)
+    .then(doCreate(datasetId, testData))
+    .then(doRead(datasetId))
     .then(function(data) {
       expect(data.data).toEqual(testData);
       expect(data.hash).not.toBeNull();
@@ -82,19 +82,19 @@ describe('Sync', function() {
   });
 
   it('should fail when reading unknown uid', function() {
-    return manage()
-    .then(doCreate)
-    .then(doRead('bogus_uid'))
+    return manage(datasetId)
+    .then(doCreate(datasetId, testData))
+    .then(doRead(datasetId, 'bogus_uid'))
     .catch(function(err) {
       expect(err).toEqual('unknown_uid');
     });
   });
 
   it('should update', function() {
-    return manage()
-    .then(doCreate)
+    return manage(datasetId)
+    .then(doCreate(datasetId, testData))
     .then(doUpdate())
-    .then(doRead())
+    .then(doRead(datasetId))
     .then(function verifyUpdate(data) {
       expect(data.data).toEqual(updateData);
     })
@@ -104,10 +104,10 @@ describe('Sync', function() {
   });
 
   it('should delete', function() {
-    return manage()
-    .then(doCreate)
+    return manage(datasetId)
+    .then(doCreate(datasetId, testData))
     .then(doDelete())
-    .then(doRead())
+    .then(doRead(datasetId))
     .catch(function(err) {
       expect(err).toEqual('unknown_uid');
     });
@@ -118,8 +118,8 @@ describe('Sync', function() {
     // The UID of the record which should have a collision.
     var recordId;
 
-    return manage()
-    .then(doCreate)
+    return manage(datasetId)
+    .then(doCreate(datasetId, testData))
     .then(waitForSyncEvent('remote_update_applied'))
     .then(function verifyUpdateApplied(event) {
       // We need to store this for updating in MongoDB in the next step.
@@ -127,7 +127,7 @@ describe('Sync', function() {
       expect(recordId).not.toBeNull();
       return recordId;
     })
-    .then(updateRecord(collisionData))
+    .then(updateRecord(datasetId, collisionData))
     .then(doUpdate())
     .then(waitForSyncEvent('collision_detected'))
     .then(function verifyCorrectCollision(event) {
@@ -158,8 +158,8 @@ describe('Sync', function() {
   it('should create records created by other clients', function() {
     const recordToCreate = { test: 'create' };
 
-    return manage()
-    .then(createRecord(recordToCreate))
+    return manage(datasetId)
+    .then(createRecord(datasetId, recordToCreate))
     .then(waitForSyncEvent('record_delta_received'))
     .then(function verifyDeltaStructure(event) {
       expect(event.uid).not.toBeNull();
@@ -167,7 +167,7 @@ describe('Sync', function() {
       expect(event.dataset_id).toEqual(datasetId);
       return event;
     })
-    .then(doRead())
+    .then(doRead(datasetId))
     .then(function verifyCorrectRecordApplied(record) {
       expect(record.data).toEqual(recordToCreate);
     })
@@ -179,8 +179,8 @@ describe('Sync', function() {
   it('should create records created by other clients', function() {
     const recordToCreate = { test: 'create' };
 
-    return manage()
-    .then(createRecord(recordToCreate))
+    return manage(datasetId)
+    .then(createRecord(datasetId, recordToCreate))
     .then(waitForSyncEvent('record_delta_received'))
     .then(function verifyDeltaStructure(event) {
       expect(event.uid).not.toBeNull();
@@ -188,7 +188,7 @@ describe('Sync', function() {
       expect(event.dataset_id).toEqual(datasetId);
       return event;
     })
-    .then(doRead())
+    .then(doRead(datasetId))
     .then(function verifyCorrectRecordApplied(record) {
       expect(record.data).toEqual(recordToCreate);
     })
@@ -200,19 +200,19 @@ describe('Sync', function() {
   it('should update records updated by other clients', function() {
     const updateData = { test: 'cause a client update' };
 
-    return manage()
-    .then(doCreate)
+    return manage(datasetId)
+    .then(doCreate(datasetId, testData))
     .then(waitForSyncEvent('remote_update_applied'))
     .then(function verifyUpdateApplied(event) {
       return event.message.uid;
     })
-    .then(updateRecord(updateData))
+    .then(updateRecord(datasetId, updateData))
     .then(waitForSyncEvent('record_delta_received'))
     .then(function verifyDeltaStructure(event) {
       expect(event.message).toEqual('update');
       return event;
     })
-    .then(doRead())
+    .then(doRead(datasetId))
     .then(function verifyRecordUpdated(record) {
       expect(record.data).toEqual(updateData);
     })
@@ -222,22 +222,65 @@ describe('Sync', function() {
   });
 });
 
-function manage() {
+it('should manage multiple datasets', function() {
+  const datasetOneId = 'specDatasetOne';
+  const datasetTwoId = 'specDatasetTwo';
+
+  const recordOne = { test: 'recordOne' };
+  const recordTwo = { test: 'recordTwo' };
+  // We will use these to get the record from `doList` later.
+  var recordOneHash;
+  var recordTwoHash;
+
+  return manage(datasetOneId)
+  .then(manage(datasetTwoId))
+  .then(doCreate(datasetOneId, recordOne))
+  .then(waitForSyncEvent('remote_update_applied'))
+  .then(function setRecordTwoHash(event) {
+    expect(event.uid).not.toBeNull();
+    recordOneHash = event.uid;
+  })
+  .then(doCreate(datasetTwoId, recordTwo))
+  .then(waitForSyncEvent('remote_update_applied'))
+  .then(function setRecordTwoHash(event) {
+    expect(event.uid).not.toBeNull();
+    recordTwoHash = event.uid;
+  })
+  .then(doList(datasetOneId))
+  .then(function verifyDatasetOneUpdates(records) {
+    expect(records[recordTwoHash]).not.toBeDefined();
+    expect(records[recordOneHash]).not.toBeNull();
+    expect(records[recordOneHash].data).toEqual(recordOne);
+  })
+  .then(doList(datasetTwoId))
+  .then(function verifyDatasetTwoUpdates(records) {
+    expect(records[recordOneHash]).not.toBeDefined();
+    expect(records[recordTwoHash]).not.toBeNull();
+    expect(records[recordTwoHash].data).toEqual(recordTwo);
+  })
+  .catch(function(err) {
+    expect(err).toBeNull();
+  });
+});
+
+function manage(dataset) {
   return new Promise(function(resolve) {
-    $fh.sync.manage(datasetId, {}, {}, {}, function() {
+    $fh.sync.manage(dataset, {}, {}, {}, function() {
       resolve();
     });
   });
 }
 
-function doCreate() {
-  return new Promise(function(resolve, reject) {
-    $fh.sync.doCreate(datasetId, testData, function(res) {
-      resolve(res);
-    }, function(err) {
-      reject(err);
+function doCreate(dataset, data) {
+  return function() {
+    return new Promise(function(resolve, reject) {
+      $fh.sync.doCreate(dataset, data, function(res) {
+        resolve(res);
+      }, function(err) {
+        reject(err);
+      });
     });
-  });
+  };
 }
 
 function doDelete() {
@@ -250,14 +293,24 @@ function doDelete() {
   };
 }
 
-function doRead(uid) {
+function doRead(dataset, uid) {
   return function(res) {
     return new Promise(function(resolve, reject) {
-      $fh.sync.doRead(datasetId, uid || res.uid, function(data) {
+      $fh.sync.doRead(dataset, uid || res.uid, function(data) {
         resolve(data);
       }, function failure(err) {
         reject(err);
       });
+    });
+  };
+}
+
+function doList(dataset) {
+  return function() {
+    return new Promise(function(resolve, reject) {
+      $fh.sync.doList(dataset, function(res) {
+        resolve(res);
+      }, reject);
     });
   };
 }
@@ -294,11 +347,11 @@ function removeCollision(collision) {
 /**
  * Update the value of a record. Used to cause a collision.
  */
-function updateRecord(record) {
+function updateRecord(dataset, record) {
   return function(uid) {
     return new Promise(function(resolve, reject) {
 
-      const updatePath = '/datasets/' + datasetId + '/records/' + uid;
+      const updatePath = '/datasets/' + dataset + '/records/' + uid;
       const recordData = { data: record };
 
       $fh.cloud({
@@ -317,9 +370,9 @@ function updateRecord(record) {
  *
  * @param {Object} record - The record to create.
  */
-function createRecord(record) {
+function createRecord(dataset, record) {
   return new Promise(function(resolve, reject) {
-    const createPath = '/datasets/' + datasetId + '/records';
+    const createPath = '/datasets/' + dataset + '/records';
     const recordData = { data: record };
 
     $fh.cloud({
