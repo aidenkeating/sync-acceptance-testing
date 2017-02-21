@@ -1,11 +1,17 @@
 const async = require('async');
 const bodyParser = require('body-parser');
+const cluster = require('cluster');
 const mbaasApi = require('fh-mbaas-api');
 const express = require('express');
 const mbaasExpress = mbaasApi.mbaasExpress();
 const cors = require('cors');
 
 const app = express();
+
+// Try to perform a clean close on shutdown events.
+process.on('SIGTERM', close);
+process.on('SIGHUP', close);
+process.on('INT', close);
 
 // Used to check whether the server should respond.
 const serverStatus = {
@@ -20,6 +26,9 @@ app.use(bodyParser.json());
 
 // Check if the server is currently set to crash for all requests.
 app.use(function crashIfNeeded(req, res, next) {
+  if (req.originalUrl.indexOf('mbaas/sync') !== -1) {
+    console.log('worker ', cluster.worker.id);
+  }
   if (req.originalUrl.indexOf('mbaas/sync') !== -1 && serverStatus.crashed) {
     return res.status(403).end();
   } else {
@@ -37,7 +46,12 @@ app.use(express.static(__dirname + '/public'));
 // Note: important that this is added just before your own Routes
 app.use(mbaasExpress.fhmiddleware());
 
+app.get('/', function(req, res) {
+  res.json({ message: 'Hello from worker ' + cluster.worker.id });
+});
 app.post('/server/status', updateStatus);
+app.post('/server/scaleUp', scaleUpCluster);
+app.post('/server/scaleDown', scaleDownCluster);
 app.post('/datasets/:datasetId/reset', resetDataset);
 app.post('/datasets', createDataset);
 app.post('/datasets/:datasetId/records', createRecord);
@@ -46,10 +60,29 @@ app.put('/datasets/:datasetId/records/:recordId', updateRecord);
 // Important that this is last!
 app.use(mbaasExpress.errorHandler());
 
-var port = process.env.FH_PORT || process.env.OPENSHIFT_NODEJS_PORT || 8001;
-var host = process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0';
-var server = app.listen(port, host, function() {
-});
+if (cluster.isMaster) {
+  const initialClusterSize = process.env.INITIAL_CLUSTER_SIZE || 8;
+
+  // Handle commands sent from workers e.g. `scaleUp` and `scaleDown`.
+  cluster.on('message', function(message) {
+    if (message.command === 'scaleUp') {
+      console.log('Scaling cluster up by ', message.amount);
+      scaleUp(message.amount);
+    } else if (message.command === 'scaleDown') {
+      console.log('Scaling cluster down by ', message.amount);
+      scaleDown(message.amount);
+    }
+  });
+
+  for (var i = 0; i < initialClusterSize; i++) {
+    console.log('Creating worker');
+    cluster.fork();
+  }
+} else {
+  var port = process.env.FH_PORT || process.env.OPENSHIFT_NODEJS_PORT || 8001;
+  var host = process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0';
+  app.listen(port, host, function() {});
+}
 
 /**
  * Request handler to delete all collections in MongoDB for a provided dataset.
@@ -85,11 +118,6 @@ function resetCollection(collection, cb) {
   }, cb);
 }
 
-module.exports = {
-  app: app,
-  server: server
-};
-
 /**
  * Update a record in a particular dataset. Used to cause a collision.
  */
@@ -118,7 +146,6 @@ function updateRecord(req, res) {
 function createRecord(req, res) {
   const dataset = req.params.datasetId;
   const recordData = req.body.data;
-
   mbaasApi.db({
     act: 'create',
     type: dataset,
@@ -157,3 +184,73 @@ function updateStatus(req, res) {
 
   res.json({ data: serverStatus }).status(200);
 }
+
+function scaleUpCluster(req, res) {
+  console.log('worker', cluster.worker.id);
+  const amount = req.body.amount;
+  process.send({ command: 'scaleUp', amount: amount });
+  res.json({ message: 'Scaling in progress' }).status(200);
+}
+
+function scaleDownCluster(req, res) {
+  console.log('worker', cluster.worker.id);
+  const amount = req.body.amount;
+  process.send({ command: 'scaleDown', amount: amount });
+  res.json({ message: 'Scaling in progress '}).status(200);
+}
+
+/**
+ * Return the current number of workers in the cluster.
+ *
+ * @returns {number} - The number of workers.
+ */
+function getClusterSize() {
+  return Object.keys(cluster.workers).length;
+}
+
+/**
+ * Scale the cluster up to the amount of workers provided.
+ *
+ * @param {number} amount - The number of workers to add to the cluster.
+ * @param {Function} cb - Callback function which passes the new worker count.
+ */
+function scaleUp(amount) {
+  for (var i = 0; i < amount; i++) {
+    cluster.fork();
+  }
+}
+
+/**
+ * Scale the cluster up to the amount of workers provided.
+ *
+ * @param {number} amount - The number of workers to remove from the cluster.
+ * @param {Function} cb - Callback function which passes the new worker count.
+ */
+function scaleDown(amount) {
+  if (getClusterSize() - amount < 1) {
+    return process.exit(0);
+  }
+
+  for (var i = 0, killed = 0; killed < amount; i++) {
+    const workerId = Object.keys(cluster.workers)[i];
+    const worker = cluster.workers[workerId];
+    killed++;
+    worker.kill();
+  }
+}
+
+function close() {
+  if (cluster.isMaster) {
+    // Kill all worker processes before exit
+    for (var id in cluster.workers) {
+      if (cluster.workers[id]) {
+        cluster.workers[id].process.kill();
+      }
+    }
+  }
+  process.exit(0);
+}
+
+module.exports = {
+  close: close
+};

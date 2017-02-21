@@ -5,13 +5,7 @@ const updateData = { test: 'something else' };
 describe('Sync', function() {
 
   beforeAll(function(done) {
-    $fh.cloud({
-      path: '/datasets',
-      data: {
-        name: 'specDataset',
-        options: { syncFrequency: 1 }
-      }
-    }, done, done.fail);
+    initDataset('specDataset', { syncFrequency: 1 }, 10, done);
   });
 
   beforeEach(function() {
@@ -366,7 +360,7 @@ describe('Sync', function() {
       .then(doCreate(datasetId, testData))
       .then(function withResult(res) {
         const uid = res.uid;
-        return clearCache(datasetId)
+        return clearCache(datasetId)()
           .then(doRead(datasetId, uid)
           .catch(function(err) {
             expect(err).toEqual('unknown_dataset ' + datasetId);
@@ -394,6 +388,28 @@ describe('Sync', function() {
       expect(err).toBeNull();
     });
   });
+
+  it('should produce dataset delta when scaled', function() {
+    const scaleDataset = 'specDataset_scaling';
+
+    return manage(scaleDataset)
+    .then(doCreate(scaleDataset, { test: 'scaled' }))
+    .then(waitForSyncEvent('sync_complete'))
+    .then(doList(scaleDataset))
+    .then(function(records) {
+      expect(records).toBeDefined();
+      console.log('list', JSON.stringify(records));
+      return waitForSyncEvent('sync_complete')()
+      .then(scaleServer('scaleUp', 7))
+      .then(waitForSyncEvent('delta_received'))
+      .then(waitForSyncEvent('sync_failed'))
+      .then(waitForSyncEvent('sync_failed'))
+      .then(waitForSyncEvent('syfdsafa'));
+    })
+    .catch(function(err) {
+      expect(err).toBeNull();
+    });
+  }, 60000);
 });
 
 function offline() {
@@ -422,11 +438,13 @@ function manage(dataset, options) {
 }
 
 function clearCache(datasetId) {
-  return new Promise(function(resolve) {
-    $fh.sync.clearCache(datasetId, function() {
-      return resolve('cleared');
+  return function() {
+    return new Promise(function(resolve) {
+      $fh.sync.clearCache(datasetId, function() {
+        return resolve('cleared');
+      });
     });
-  });
+  };
 }
 
 function doCreate(dataset, data) {
@@ -607,6 +625,10 @@ function waitForSyncEvent(expectedEvent) {
   return function() {
     return new Promise(function(resolve) {
       $fh.sync.notify(function(event) {
+        console.log('event', event.code);
+        if (event.code === 'record_delta_received' || event.code === 'delta_received') {
+          console.log(JSON.stringify(event));
+        }
         if (event.code === expectedEvent) {
           expect(event.code).toEqual(expectedEvent); // keep jasmine happy with at least 1 expectation
           resolve(event);
@@ -633,6 +655,56 @@ function setServerStatus(status) {
       }, resolve, reject);
     });
   };
+}
+
+/**
+ * Tell the server to increase or decrease the amount of workers it has in its
+ * cluster.
+ *
+ * @param {('scaleUp'|'scaleDown')} command - Command to invoke on the server.
+ * @param {number} - The number of workers to add or remove fromt he cluster.
+ */
+function scaleServer(command, amount) {
+  return function() {
+    return new Promise(function(resolve, reject) {
+      $fh.cloud({
+        path: '/server/' + command,
+        data: {
+          amount: amount
+        }
+      }, resolve, reject);
+    });
+  };
+}
+
+/**
+ * Performed at the start of the tests. Try to initialise the dataset on the
+ * server side through the added `POST /datasets` endpoint. Try at most ten
+ * times and fail if it cannot be initialised in this time.
+ *
+ * @param {string} dataset - The name of the dataset to initialise.
+ * @param {Object} options - Options to use on the dataset, server-side.
+ * @param {number} retries - The amount of times to try to create the dataset,
+ *                           with one second intervals.
+ * @param {Function} done - The done callback function provided by Jasmine.
+ */
+function initDataset(dataset, options, retries, done) {
+  $fh.cloud({
+    path: '/datasets',
+    data: {
+      name: dataset,
+      options: options
+    }
+  }, done, function() {
+    const remainingRetries = retries - 1;
+    if (remainingRetries > 0) {
+      setTimeout(function() {
+        return initDataset(dataset, options, remainingRetries, done);
+      }, 1000);
+    } else {
+      return done.fail();
+    }
+  });
 }
 
 /**

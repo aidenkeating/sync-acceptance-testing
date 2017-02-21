@@ -1,5 +1,6 @@
 const connect = require('connect');
 const serveStatic = require('serve-static');
+const fork = require('child_process').fork;
 const grunt = require('grunt');
 var cloudServer;
 var clientServer;
@@ -7,9 +8,8 @@ var clientServer;
 grunt.registerTask('startServers', function startServers() {
   process.env.FH_USE_LOCAL_DB = true;
   const done = this.async();
-  cloudServer = require('./application.js').server;
+  cloudServer = fork(__dirname + '/application.js');
   clientServer = connect().use(serveStatic(__dirname)).listen(9002, function() {
-    console.log('server listening');
     return done();
   });
 });
@@ -19,7 +19,7 @@ grunt.registerTask('stopServers', function stopServers() {
     clientServer.close();
   }
   if (cloudServer) {
-    cloudServer.close();
+    cloudServer.kill();
   }
 });
 
